@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Glowing Spirograph Heart</title>
+  <style>
+    /* Full-viewport black background and centered canvas */
+    html,body {
+      height: 100%;
+      margin: 0;
+      background: #000;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      position: fixed;
+      inset: 0;
+      margin: auto;
+      width: 100vw;
+      height: 100vh;
+      touch-action: none;
+      background: transparent;
+    }
+    /* Small unobtrusive attribution (optional) */
+    .note {
+      position: fixed;
+      right: 12px;
+      bottom: 10px;
+      font-family: system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      font-size: 12px;
+      color: rgba(255,160,80,0.75);
+      user-select: none;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="note">Glowing Heart — Canvas</div>
+
+  <script>
+  /**
+   * Glowing spirograph-style heart animation.
+   * - Single-file HTML, CSS, JS.
+   * - Responsive canvas with devicePixelRatio scaling.
+   * - Many overlapping parametric curves form a glowing, morphing heart.
+   * - Additive blending + shadow blur for glow.
+   */
+
+  (function () {
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d', { alpha: true });
+    let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
+    // Settings - tweak for performance / appearance
+    const POINTS = 360;        // samples per curve
+    const LAYERS = 60;         // number of overlapping curves
+    const BASE_SIZE = 340;     // base heart size (CSS pixels)
+    const SPEED = 0.7;         // animation speed multiplier
+    const TRAIL_ALPHA = 0.12;  // alpha of the fade overlay - creates motion trails
+    const LINE_WIDTH = 0.9;    // base line width (CSS pixels)
+    const GLOW = 20;           // shadowBlur base for glow
+
+    // Precompute normalized heart points (unit scale)
+    // Heart parametric: x = 16 sin^3 t, y = 13 cos t - 5 cos 2t - 2 cos 3t - cos 4t
+    const basePoints = [];
+    for (let i = 0; i < POINTS; i++) {
+      const t = (i / POINTS) * Math.PI * 2;
+      const s = Math.sin(t), c = Math.cos(t);
+      const x = 16 * Math.pow(s, 3);
+      const y = 13 * c - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+      basePoints.push({ x, y, t });
+    }
+    // Normalize bounding box of base points
+    (function normalize() {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const p of basePoints) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+      const width = maxX - minX, height = maxY - minY;
+      const cx = (maxX + minX) / 2, cy = (maxY + minY) / 2;
+      for (const p of basePoints) {
+        p.x = (p.x - cx) / Math.max(width, height);
+        p.y = (p.y - cy) / Math.max(width, height);
+      }
+    })();
+
+    // Resize & DPR handling
+    function resize() {
+      DPR = Math.max(1, window.devicePixelRatio || 1);
+      const cssW = Math.max(300, window.innerWidth);
+      const cssH = Math.max(300, window.innerHeight);
+      W = cssW; H = cssH;
+      canvas.style.width = cssW + 'px';
+      canvas.style.height = cssH + 'px';
+      canvas.width = Math.round(cssW * DPR);
+      canvas.height = Math.round(cssH * DPR);
+      // Set transform so we can draw in CSS pixel coordinates while accounting for DPR
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      // High quality smoothing
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      // Fill black background at full opacity on resize
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W, H);
+    }
+    window.addEventListener('resize', resize, { passive: true });
+    resize();
+
+    // Utility: rotate a point (x,y) by angle
+    function rot(x, y, a) {
+      const ca = Math.cos(a), sa = Math.sin(a);
+      return { x: x * ca - y * sa, y: x * sa + y * ca };
+    }
+
+    // Animation loop variables
+    let last = performance.now();
+    let time = 0;
+
+    // Main drawing loop
+    function draw(now) {
+      // time in seconds, scaled by speed
+      const dt = Math.min(0.033, (now - last) / 1000);
+      last = now;
+      time += dt * SPEED;
+
+      // Slight translucent black rectangle to produce soft trails
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = `rgba(0,0,0,${TRAIL_ALPHA})`;
+      ctx.fillRect(0, 0, W, H);
+
+      // Setup additive blending so overlapping strokes brighten
+      ctx.globalCompositeOperation = 'lighter';
+
+      // Translate to center
+      ctx.save();
+      ctx.translate(W / 2, H / 2);
+
+      // Scale to fit the viewport while keeping aspect ratio
+      const minSide = Math.min(W, H);
+      const size = (minSide / 2) * 0.94; // occupy most of the screen
+      const baseScale = (size / BASE_SIZE) * 1.1; // tweak for better fill
+
+      // For each layer, draw one curve with slight offset and per-point warp
+      for (let layer = 0; layer < LAYERS; layer++) {
+        const layerFrac = layer / LAYERS;
+        // rotation rotates each layer a bit; overall rotation over time
+        const rotation = time * 0.15 + layerFrac * 2.5;
+        // phase shifts make layering interesting
+        const phase = time * (0.8 + 0.6 * Math.sin(time * 0.1 + layerFrac * 6)) + layerFrac * 5.2;
+        // thickness reduces for outer layers optionally
+        const lw = LINE_WIDTH * (1.0 - 0.5 * (layerFrac));
+        ctx.lineWidth = Math.max(0.35, lw);
+        // glow intensity and blur vary with layer
+        ctx.shadowBlur = GLOW * (0.9 + 0.6 * Math.sin(layerFrac * 12 + time * 0.3));
+        ctx.shadowColor = `rgba(255,120,30,${0.9 - layerFrac * 0.8})`;
+        // stroke color - orange -> red gradient across layers
+        const hue = 24 + 18 * Math.sin(layerFrac * 3.14 + time * 0.2);
+        const sat = 90;
+        const light = 55 - layerFrac * 18;
+        ctx.strokeStyle = `hsl(${hue} ${sat}% ${light}%)`;
+
+        ctx.beginPath();
+        // Draw path connecting all sampled points
+        for (let i = 0; i < POINTS; i++) {
+          const p = basePoints[i];
+          // time-varying radial warp to morph the heart smoothly
+          // warp scales with point angle and layer to produce flowing trails
+          const wave = Math.sin(p.t * 4 + phase * 1.6 + layer * 0.12);
+          const warp = 1 + 0.075 * Math.sin(time * 1.2 + i * 0.027 + layer * 0.18) + 0.045 * wave;
+          // subtle breathing scale
+          const breathe = 1 + 0.02 * Math.sin(time * 0.8 + layer * 0.4);
+
+          // Convert normalized base point to screen coordinates
+          const sx = p.x * baseScale * BASE_SIZE * warp * breathe;
+          const sy = -p.y * baseScale * BASE_SIZE * warp * breathe; // invert Y so heart points up
+
+          // Apply rotation for this layer
+          const r = rot(sx, sy, rotation);
+
+          // Slight radial jitter per-point for thin-line variety
+          const jitter = 0.5 * Math.sin(time * 3.2 + i * 0.65 + layer * 0.9);
+          const finalX = r.x + jitter * (1 + layerFrac * 0.4);
+          const finalY = r.y + 0.5 * Math.cos(time * 2.4 + i * 0.45 + layer) * (1 + layerFrac * 0.2);
+
+          if (i === 0) ctx.moveTo(finalX, finalY);
+          else ctx.lineTo(finalX, finalY);
+        }
+        // Close path for fullness (optional)
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      ctx.restore();
+
+      // Reset shadow and composite for safety
+      ctx.shadowBlur = 0;
+      ctx.globalCompositeOperation = 'source-over';
+
+      // Keep animating at browser's refresh rate
+      requestAnimationFrame(draw);
+    }
+
+    // Start the animation
+    requestAnimationFrame(draw);
+
+    // Optional: pause on document hidden to save CPU
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        // Fill black to avoid half-frame artifacts when tab resumes
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, W, H);
+      } else {
+        last = performance.now();
+      }
+    }, false);
+
+    // Initial warm-up draw to fill background
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+  })();
+  </script>
+</body>
+</html>
